@@ -10,25 +10,47 @@ from dateutil.relativedelta import *
 import json
 import os
 
-STAKE_CURRENCY = 'BUSD'
+STAKE_CURRENCY = 'USDT'
+EXCHANGE = 'binance'
 
 config = Configuration.from_files([])
-config["dataformat_ohlcv"] = "hdf5"
+config["dataformat_ohlcv"] = "json"
 config["timeframe"] = "1d"
-config['exchange']['name'] = "binance"
+config['exchange']['name'] = EXCHANGE
 config['stake_currency'] = STAKE_CURRENCY
 config['exchange']['pair_whitelist'] = [
     f'.*/{STAKE_CURRENCY}',
 ]
 config['exchange']['pair_blacklist'] = [
-    '^(.*USD|USDC|AUD|BRZ|CAD|CHF|EUR|GBP|HKD|SGD|TRY|ZAR|TUSD)/.*',
-    'PAX/.*',
-    'DAI/.*',
-    'PAXG/.*',
-    ".*UP/USDT",
-    ".*DOWN/USDT",
-    ".*BEAR/USDT",
-    ".*BULL/USDT"
+    # // Major coins
+    "(BTC|ETH)/.*",
+    # // BINANCE:
+    # // Exchange
+    "(BNB)/.*",
+    # // Leverage
+    ".*(_PREMIUM|BEAR|BULL|DOWN|HALF|HEDGE|UP|[1235][SL])/.*",
+    # // Fiat
+    "(AUD|BRZ|CAD|CHF|EUR|GBP|HKD|IDRT|JPY|NGN|RUB|SGD|TRY|UAH|USD|ZAR)/.*",
+    # // Stable
+    "(BUSD|CUSDT|DAI|PAXG|SUSD|TUSD|USDC|USDP|USDT|VAI)/.*",
+    # // FAN
+    "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LAZIO|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
+    # // Others
+    "(CHZ|CTXC|HBAR|NMR|SHIB|SLP|XVS|ONG|ARDR)/.*",
+
+    # // KUCOIN:
+    # // Exchange Tokens
+    "KCS/.*",
+    # // Leverage tokens
+    ".*(3|3L|3S|5L|5S)/.*",
+    # // Fiat
+    "(AUD|EUR|GBP|CHF|CAD|JPY)/.*",
+    # // Stable tokens
+    "(BUSD|USDT|TUSD|USDC|CUSDT|DAI|USDN|CUSD)/.*",
+    # // FAN Tokens
+    "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PORTO|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
+    # // Other Coins
+    "(CHZ|SLP|XVS|MEM|AMPL|XYM|POLX|CARR|SKEY|MASK|KLV|TLOS)/.*"
 ]
 config['pairlists'] = [
     {
@@ -46,6 +68,7 @@ print(f"found {str(len(pairs))} pairs on {config['exchange']['name']}")
 
 DATE_FORMAT = '%Y%m%d'
 DATE_TIME_FORMAT = '%Y%m%d %H:%M:%S'
+
 
 def get_data_slices_dates(df, start_date_str, end_date_str, interval):
     # df_start_date = df.date.min()
@@ -102,7 +125,6 @@ def process_candles_data(pairs, filter_price):
 
     for pair in pairs:
 
-
         print(data_location)
         print(config["timeframe"])
         print(pair)
@@ -111,7 +133,7 @@ def process_candles_data(pairs, filter_price):
             datadir=data_location,
             timeframe=config["timeframe"],
             pair=pair,
-            data_format="hdf5"
+            data_format="json"
         )
 
         if len(candles):
@@ -124,13 +146,16 @@ def process_candles_data(pairs, filter_price):
             if full_dataframe.empty:
                 full_dataframe = candles[['date', column_name]].copy()
             else:
-                full_dataframe = pd.merge(full_dataframe, candles[['date', column_name]].copy(), on='date', how='left')
+                #this row (as it was in the original) cut off the dataframe depending on the first (hence the how='left' candle of the the pair. Outer merges both including the new timerange of the 2ndary pairs.
+                #full_dataframe = pd.merge(full_dataframe, candles[['date', column_name]].copy(), on='date', how='left')
+                full_dataframe = pd.merge(full_dataframe, candles[['date', column_name]].copy(), on='date', how='outer')
             # print("Loaded " + str(len(candles)) + f" rows of data for {pair} from {data_location}")
             # print(full_dataframe.tail(1))
 
     print(full_dataframe.head())
 
-    full_dataframe['date'] = full_dataframe['date'].dt.tz_localize(None)
+    if "date" in full_dataframe:
+        full_dataframe['date'] = full_dataframe['date'].dt.tz_localize(None)
 
     return full_dataframe
 
@@ -149,7 +174,8 @@ def process_date_slices(df, date_slices, number_assets):
             result_pairs_list = list(summarised.index)
 
         if len(result_pairs_list) > 0:
-            result[f'{date_slice["start"].strftime(DATE_FORMAT)}-{date_slice["end"].strftime(DATE_FORMAT)}'] = result_pairs_list
+            result[
+                f'{date_slice["start"].strftime(DATE_FORMAT)}-{date_slice["end"].strftime(DATE_FORMAT)}'] = result_pairs_list
 
     return result
 
@@ -169,7 +195,7 @@ def main():
     # Make this argparseble
     # And add blacklist
     START_DATE_STR = '20180101 00:00:00'
-    END_DATE_STR = '20211001 00:00:00'
+    END_DATE_STR = '20211201 00:00:00'
     # For now it shouldn't be less than a day because it's outputs object with timerage suitable for backtesting
     # for easy copying eg. 20210501-20210602
     INTERVAL_ARR = ['monthly', 'weekly', 'daily']
@@ -184,29 +210,29 @@ def main():
     start_string = START_DATE_STR.split(' ')[0]
     end_string = END_DATE_STR.split(' ')[0]
 
-
     for asset_filter_price in ASSET_FILTER_PRICE_ARR:
 
         volume_dataframe = process_candles_data(pairs, asset_filter_price)
+
+        if volume_dataframe.empty:
+            continue
 
         for interval in INTERVAL_ARR:
             date_slices = get_data_slices_dates(volume_dataframe, START_DATE_STR, END_DATE_STR, interval)
 
             for number_assets in NUMBER_ASSETS_ARR:
-
                 result_obj = process_date_slices(volume_dataframe, date_slices, number_assets)
                 # {'timerange': [pairlist]}
                 print(result_obj)
                 p_json = json.dumps(result_obj, indent=4)
-                file_name = f'user_data/pairlists/{STAKE_CURRENCY}/{interval}/{interval}_{number_assets}_{STAKE_CURRENCY}_{str(asset_filter_price).replace(".", ",")}_minprice_{start_string}_{end_string}.json'
+                file_name = f'user_data/pairlists/{EXCHANGE}/{STAKE_CURRENCY}/{interval}/{interval}_{number_assets}_{STAKE_CURRENCY}_{str(asset_filter_price).replace(".", ",")}_minprice_{start_string}_{end_string}.json'
                 os.makedirs(os.path.dirname(file_name), exist_ok=True)
                 with open(file_name, 'w') as f:
                     f.write(p_json)
 
-
     # Save result object as json to --outfile location
     print('Done.')
 
+
 if __name__ == "__main__":
     main()
-
