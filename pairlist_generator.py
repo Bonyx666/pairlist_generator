@@ -9,8 +9,9 @@ import argparse
 from dateutil.relativedelta import *
 import json
 import os
+import argparse
 
-STAKE_CURRENCY = 'USDT'
+STAKE_CURRENCY = 'BTC'
 EXCHANGE = 'binance'
 
 config = Configuration.from_files([])
@@ -190,19 +191,26 @@ def main():
     parser.add_argument("-mp", "--minprice", help="price for price filter")
     parser.add_argument("-tf", "--timeframe", help="timeframe of loaded candles data")
     parser.add_argument("-na", "--numberassets", help="number of assets to be filtered")
+
+    parser.add_argument("--exchange", default="binance")
+    parser.add_argument("--stake_currency", default="USDT")
+
     args = parser.parse_args()
 
     # Make this argparseble
     # And add blacklist
     START_DATE_STR = '20180101 00:00:00'
-    END_DATE_STR = '20211201 00:00:00'
+    END_DATE_STR = '20220101 00:00:00'
     # For now it shouldn't be less than a day because it's outputs object with timerage suitable for backtesting
     # for easy copying eg. 20210501-20210602
     INTERVAL_ARR = ['monthly', 'weekly', 'daily']
     # INTERVAL_ARR = ['weekly']
     # INTERVAL_ARR = ['monthly']
     ASSET_FILTER_PRICE_ARR = [0, 0.01, 0.02, 0.05, 0.15, 0.5]
-    NUMBER_ASSETS_ARR = [30, 45, 60, 75, 90, 105, 120]
+    NUMBER_ASSETS_ARR = [30, 45, 60, 75, 90, 105, 120, 200, 1000]
+
+    EXCHANGE = args.exchange
+    STAKE_CURRENCY = args.stake_currency
 
     # ASSET_FILTER_PRICE_ARR = [0]
     # NUMBER_ASSETS_ARR = [90]
