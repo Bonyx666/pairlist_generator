@@ -5,14 +5,14 @@ from freqtrade.resolvers import ExchangeResolver
 from freqtrade.plugins.pairlistmanager import PairListManager
 import pandas as pd
 from datetime import datetime, timedelta
-import argparse
+
 from dateutil.relativedelta import *
 import json
 import os
 import argparse
 
 
-class generator():
+class generator:
     STAKE_CURRENCY_NAME = ''
     EXCHANGE_NAME = ''
     config = ''
@@ -188,20 +188,20 @@ class generator():
     def main(self):
         parser = argparse.ArgumentParser()
 
-        parser.add_argument("-c", "--config", help="config to parse")
-        parser.add_argument("-t", "--timerange", nargs='?',
-                            help="timerange as per freqtrade format, e.g. 20210401-, 20210101-20210201, etc")
-        parser.add_argument("-o", "--outfile", help="path where output the pairlist", type=argparse.FileType('w'))
-        parser.add_argument("-mp", "--minprice", help="price for price filter")
-        parser.add_argument("-tf", "--timeframe", help="timeframe of loaded candles data")
-        parser.add_argument("-na", "--numberassets", help="number of assets to be filtered")
+        #parser.add_argument("-c", "--config", help="config to parse")
+        #parser.add_argument("-t", "--timerange", nargs='?',
+        #                    help="timerange as per freqtrade format, e.g. 20210401-, 20210101-20210201, etc")
+        #parser.add_argument("-o", "--outfile", help="path where output the pairlist", type=argparse.FileType('w'))
+        #parser.add_argument("-mp", "--minprice", help="price for price filter")
+        #parser.add_argument("-tf", "--timeframe", help="timeframe of loaded candles data")
+        #parser.add_argument("-na", "--numberassets", help="number of assets to be filtered")
 
         parser.add_argument("--exchange", default="binance")
         parser.add_argument("--stake_currency", default="USDT")
 
         args = parser.parse_args()
 
-        # Make this argparseble
+        # Make this arg parse-able
         # And add blacklist
         START_DATE_STR = '20180101 00:00:00'
         END_DATE_STR = '20220101 00:00:00'
