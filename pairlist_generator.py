@@ -1,20 +1,34 @@
 from pathlib import Path
+
+import freqtrade.commands.data_commands
 from freqtrade.configuration import Configuration
 from freqtrade.data.history import load_pair_history
 from freqtrade.resolvers import ExchangeResolver
 from freqtrade.plugins.pairlistmanager import PairListManager
 import pandas as pd
+from freqtrade.enums import CandleType, MarginMode, TradingMode
 from datetime import datetime, timedelta
+from freqtrade.data.history.history_utils import (_download_pair_history, _download_trades_history,
+                                                  _load_cached_data_for_updating,
+                                                  convert_trades_to_ohlcv, get_timerange, load_data,
+                                                  load_pair_history, refresh_backtest_ohlcv_data,
+                                                  refresh_backtest_trades_data, refresh_data,
+                                                  validate_backtest_data)
+import nest_asyncio
 
 from dateutil.relativedelta import *
 import json
 import os
 import argparse
 
+nest_asyncio.apply()
+
 
 class generator:
     STAKE_CURRENCY_NAME = ''
     EXCHANGE_NAME = ''
+    TRADING_MODE_NAME = ''
+    DATA_FORMAT = ''
     config = ''
     exchange = ''
     pairlists = ''
@@ -23,59 +37,100 @@ class generator:
     DATE_FORMAT = '%Y%m%d'
     DATE_TIME_FORMAT = '%Y%m%d %H:%M:%S'
 
+    FUTURES_ONLY = False
+    SPOT_ONLY = True
+
     def set_config(self):
         self.config = Configuration.from_files([])
-        self.config["dataformat_ohlcv"] = "json"
+        self.config["dataformat_ohlcv"] = self.DATA_FORMAT
         self.config["timeframe"] = "1d"
         self.config['exchange']['name'] = self.EXCHANGE_NAME
         self.config['stake_currency'] = self.STAKE_CURRENCY_NAME
         self.config['exchange']['pair_whitelist'] = [
             f'.*/{self.STAKE_CURRENCY_NAME}',
         ]
-        self.config['exchange']['pair_blacklist'] = [
-            # // Major coins
-            "(BTC|ETH)/.*",
-            # // BINANCE:
-            # // Exchange
-            "(BNB)/.*",
-            # // Leverage
-            ".*(_PREMIUM|BEAR|BULL|DOWN|HALF|HEDGE|UP|[1235][SL])/.*",
-            # // Fiat
-            "(AUD|BRZ|CAD|CHF|EUR|GBP|HKD|IDRT|JPY|NGN|RUB|SGD|TRY|UAH|USD|ZAR)/.*",
-            # // Stable
-            "(BUSD|CUSDT|DAI|PAXG|SUSD|TUSD|USDC|USDP|USDT|VAI)/.*",
-            # // FAN
-            "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LAZIO|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
-            # // Others
-            "(CHZ|CTXC|HBAR|NMR|SHIB|SLP|XVS|ONG|ARDR)/.*",
+        self.config['exchange']['pair_blacklist'] = []
+        '''# // Major coins
+        "(BTC|ETH)/.*",
+        # // BINANCE:
+        # // Exchange
+        "(BNB)/.*",
+        # // Leverage
+        ".*(_PREMIUM|BEAR|BULL|DOWN|HALF|HEDGE|UP|[1235][SL])/.*",
+        # // Fiat
+        "(AUD|BRZ|CAD|CHF|EUR|GBP|HKD|IDRT|JPY|NGN|RUB|SGD|TRY|UAH|USD|ZAR)/.*",
+        # // Stable
+        "(BUSD|CUSDT|DAI|PAXG|SUSD|TUSD|USDC|USDP|USDT|VAI)/.*",
+        # // FAN
+        "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LAZIO|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
+        # // Others
+        "(CHZ|CTXC|HBAR|NMR|SHIB|SLP|XVS|ONG|ARDR)/.*",
 
-            # // KUCOIN:
-            # // Exchange Tokens
-            "KCS/.*",
-            # // Leverage tokens
-            ".*(3|3L|3S|5L|5S)/.*",
-            # // Fiat
-            "(AUD|EUR|GBP|CHF|CAD|JPY)/.*",
-            # // Stable tokens
-            "(BUSD|USDT|TUSD|USDC|CUSDT|DAI|USDN|CUSD)/.*",
-            # // FAN Tokens
-            "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PORTO|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
-            # // Other Coins
-            "(CHZ|SLP|XVS|MEM|AMPL|XYM|POLX|CARR|SKEY|MASK|KLV|TLOS)/.*"
+        # // KUCOIN:
+        # // Exchange Tokens
+        "KCS/.*",
+        # // Leverage tokens
+        ".*(3|3L|3S|5L|5S)/.*",
+        # // Fiat
+        "(AUD|EUR|GBP|CHF|CAD|JPY)/.*",
+        # // Stable tokens
+        "(BUSD|USDT|TUSD|USDC|CUSDT|DAI|USDN|CUSD)/.*",
+        # // FAN Tokens
+        "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PORTO|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
+        # // Other Coins
+        "(CHZ|SLP|XVS|MEM|AMPL|XYM|POLX|CARR|SKEY|MASK|KLV|TLOS)/.*"
         ]
+        '''
         self.config['pairlists'] = [
             {
                 "method": "StaticPairList",
             },
         ]
 
+        if self.TRADING_MODE_NAME == "spot":
+            self.config['trading_mode'] = TradingMode.SPOT
+            self.config['margin_mode'] = MarginMode.NONE
+            self.CANDLE_TYPE = CandleType.SPOT
+            self.FUTURES_ONLY = False
+            self.SPOT_ONLY = True
+            self.config['candle_type_def'] = CandleType.SPOT
+        else:
+            self.config['trading_mode'] = TradingMode.FUTURES
+            self.config['margin_mode'] = MarginMode.ISOLATED
+            self.CANDLE_TYPE = CandleType.FUTURES
+            self.FUTURES_ONLY = True
+            self.SPOT_ONLY = False
+            self.config['candle_type_def'] = CandleType.FUTURES
+
         self.exchange = ExchangeResolver.load_exchange(self.config['exchange']['name'], self.config, validate=False)
+
         self.pairlists = PairListManager(self.exchange, self.config)
-        self.pairlists.refresh_pairlist()
-        self.pairs = self.pairlists.whitelist
+        #self.pairlists.refresh_pairlist()
+        #self.pairs = self.pairlists.whitelist
         self.data_location = Path(self.config['user_data_dir'], 'data', self.config['exchange']['name'])
 
-        print(f"found {str(len(self.pairs))} pairs on {self.config['exchange']['name']}")
+        self.pairs = list(self.get_pairs(self))
+        self.config['exchange']['pair_whitelist'] = self.pairs
+
+        print(f"found {str(len(self.config['exchange']['pair_whitelist']))} "
+              f"pairs on {self.config['exchange']['name']}"
+              f", market:{str(self.config['trading_mode']).split('.')[1].lower()}"
+              f", stake:{self.config['stake_currency']}")
+
+    def get_pairs(self):
+        try:
+            pairs = self.exchange.get_markets(base_currencies="",
+                                              quote_currencies=self.STAKE_CURRENCY_NAME,
+                                              tradable_only=True,
+                                              active_only=False,
+                                              spot_only=self.SPOT_ONLY,
+                                              margin_only=False,  # no margin atm, no need to set that in a variable.
+                                              futures_only=self.FUTURES_ONLY)
+            # Sort the pairs/markets by symbol
+            pairs = dict(sorted(pairs.items()))
+        except Exception as e:
+            raise (f"Cannot get markets. Reason: {e}") from e
+        return pairs
 
     def get_data_slices_dates(df, start_date_str, end_date_str, interval, self):
         # df_start_date = df.date.min()
@@ -126,20 +181,21 @@ class generator:
 
         return slices
 
-    def process_candles_data(pairs, filter_price, self):
+    def process_candles_data(self, filter_price):
         full_dataframe = pd.DataFrame()
 
-        for pair in pairs:
+        for pair in self.pairs:
 
-            print(self.data_location)
-            print(self.config["timeframe"])
-            print(pair)
+            # print(self.data_location)
+            # print(self.config["timeframe"])
+            # print(pair)
 
             candles = load_pair_history(
                 datadir=self.data_location,
                 timeframe=self.config["timeframe"],
                 pair=pair,
-                data_format="json"
+                data_format=self.DATA_FORMAT,
+                candle_type=self.CANDLE_TYPE
             )
 
             if len(candles):
@@ -159,7 +215,7 @@ class generator:
                 # print("Loaded " + str(len(candles)) + f" rows of data for {pair} from {data_location}")
                 # print(full_dataframe.tail(1))
 
-        print(full_dataframe.head())
+        # print(full_dataframe.head())
 
         if "date" in full_dataframe:
             full_dataframe['date'] = full_dataframe['date'].dt.tz_localize(None)
@@ -186,25 +242,31 @@ class generator:
         return result
 
     def main(self):
+        self.CANDLE_TYPE = CandleType.SPOT
         parser = argparse.ArgumentParser()
 
-        #parser.add_argument("-c", "--config", help="config to parse")
-        #parser.add_argument("-t", "--timerange", nargs='?',
+        # parser.add_argument("-c", "--config", help="config to parse")
+        # parser.add_argument("-t", "--timerange", nargs='?',
         #                    help="timerange as per freqtrade format, e.g. 20210401-, 20210101-20210201, etc")
-        #parser.add_argument("-o", "--outfile", help="path where output the pairlist", type=argparse.FileType('w'))
-        #parser.add_argument("-mp", "--minprice", help="price for price filter")
-        #parser.add_argument("-tf", "--timeframe", help="timeframe of loaded candles data")
-        #parser.add_argument("-na", "--numberassets", help="number of assets to be filtered")
+        # parser.add_argument("-o", "--outfile", help="path where output the pairlist", type=argparse.FileType('w'))
+        # parser.add_argument("-mp", "--minprice", help="price for price filter")
+        # parser.add_argument("-tf", "--timeframe", help="timeframe of loaded candles data")
+        # parser.add_argument("-na", "--numberassets", help="number of assets to be filtered")
 
-        parser.add_argument("--exchange", default="binance")
-        parser.add_argument("--stake_currency", default="USDT")
+        parser.add_argument("--exchange", default="binance kucoin okex gateio")
+        parser.add_argument("--stake_currency", default="USDT BUSD BTC")
+        parser.add_argument("--trading_mode", default="futures spot")
+        parser.add_argument("--data_format", default="jsongz")
 
         args = parser.parse_args()
 
         # Make this arg parse-able
         # And add blacklist
         START_DATE_STR = '20180101 00:00:00'
-        END_DATE_STR = '20220101 00:00:00'
+        END_DATE_STR = '20220501 00:00:00'
+        start_string = START_DATE_STR.split(' ')[0]
+        end_string = END_DATE_STR.split(' ')[0]
+
         # For now it shouldn't be less than a day because it's outputs object with timerage suitable for backtesting
         # for easy copying eg. 20210501-20210602
         INTERVAL_ARR = ['monthly', 'weekly', 'daily']
@@ -213,40 +275,70 @@ class generator:
         ASSET_FILTER_PRICE_ARR = [0, 0.01, 0.02, 0.05, 0.15, 0.5]
         NUMBER_ASSETS_ARR = [30, 45, 60, 75, 90, 105, 120, 200]
 
-        self.EXCHANGE_NAME = args.exchange
-        self.STAKE_CURRENCY_NAME = args.stake_currency
+        split_exchange = args.exchange.split(" ")
+        self.DATA_FORMAT = args.data_format
+        for single_exchange in args.exchange.split(" "):
+            self.EXCHANGE_NAME = single_exchange
+            for single_trading_mode in args.trading_mode.split(" "):
+                self.TRADING_MODE_NAME = single_trading_mode
+                for single_currency_name in args.stake_currency.split(" "):
+                    self.STAKE_CURRENCY_NAME = single_currency_name
 
-        # ASSET_FILTER_PRICE_ARR = [0]
-        # NUMBER_ASSETS_ARR = [90]
-
-        start_string = START_DATE_STR.split(' ')[0]
-        end_string = END_DATE_STR.split(' ')[0]
-
-        self.set_config(self)
-
-        for asset_filter_price in ASSET_FILTER_PRICE_ARR:
-
-            volume_dataframe = self.process_candles_data(self.pairs, asset_filter_price, self)
-
-            if volume_dataframe.empty:
-                continue
-
-            for interval in INTERVAL_ARR:
-                date_slices = self.get_data_slices_dates(volume_dataframe, START_DATE_STR, END_DATE_STR, interval, self)
-
-                for number_assets in NUMBER_ASSETS_ARR:
-                    result_obj = self.process_date_slices(volume_dataframe, date_slices, number_assets, self)
-                    # {'timerange': [pairlist]}
-                    print(result_obj)
-                    p_json = json.dumps(result_obj, indent=4)
-                    file_name = f'user_data/pairlists/{self.EXCHANGE_NAME}/{self.STAKE_CURRENCY_NAME}/{interval}/{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_{str(asset_filter_price).replace(".", ",")}_minprice_{start_string}_{end_string}.json'
-                    os.makedirs(os.path.dirname(file_name), exist_ok=True)
-                    with open(file_name, 'w') as f:
-                        f.write(p_json)
-
-        # Save result object as json to --outfile location
-        print('Done.')
+                    self.set_config(self)
 
 
-if __name__ == "__main__":
-    generator.main(generator)
+                    if len(self.config['exchange']['pair_whitelist'])==0:
+                        print("-- Skipping this download/calculation part since there are no pairs here...")
+                    else:
+                        print("Status: downloading data...")
+                        download_args = {"pairs": self.pairs,
+                                         "include_inactive": True,
+                                         "timerange": start_string + "-" + end_string,
+                                         "download_trades": False,
+                                         "exchange": self.EXCHANGE_NAME,
+                                         "timeframes": [self.config["timeframe"]],
+                                         "trading_mode": self.config['trading_mode'],
+                                         "dataformat_ohlcv": self.DATA_FORMAT,
+                                         }
+
+                        freqtrade.commands.data_commands.start_download_data(download_args)
+
+                        print("Status: calculating pairlists...")
+                        for asset_filter_price in ASSET_FILTER_PRICE_ARR:
+
+                            volume_dataframe = self.process_candles_data(self, asset_filter_price)
+
+                            if volume_dataframe.empty:
+                                continue
+
+                            for interval in INTERVAL_ARR:
+                                date_slices = self.get_data_slices_dates(
+                                    volume_dataframe,
+                                    START_DATE_STR,
+                                    END_DATE_STR,
+                                    interval,
+                                    self)
+
+                                for number_assets in NUMBER_ASSETS_ARR:
+                                    result_obj = self.process_date_slices(volume_dataframe, date_slices, number_assets,
+                                                                          self)
+                                    # {'timerange': [pairlist]}
+                                    # print(result_obj)
+                                    p_json = json.dumps(result_obj, indent=4)
+                                    file_name = f'user_data/pairlists/' \
+                                                f'{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}/' \
+                                                f'{self.STAKE_CURRENCY_NAME}/' \
+                                                f'{interval}/' \
+                                                f'{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_' \
+                                                f'{str(asset_filter_price).replace(".", ",")}' \
+                                                f'_minprice_{start_string}_{end_string}' \
+                                                f'.json'
+                                    os.makedirs(os.path.dirname(file_name), exist_ok=True)
+                                    with open(file_name, 'w') as f:
+                                        f.write(p_json)
+
+                        # Save result object as json to --outfile location
+                        print(f'Done {self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}_{self.STAKE_CURRENCY_NAME}')
+
+
+generator.main(generator)
