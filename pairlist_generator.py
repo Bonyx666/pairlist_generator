@@ -22,6 +22,7 @@ from dateutil.relativedelta import *
 import json
 import os
 import argparse
+import numpy
 
 nest_asyncio.apply()
 
@@ -257,26 +258,19 @@ class generator:
             self.CANDLE_TYPE = CandleType.SPOT
             parser = argparse.ArgumentParser()
 
-            # parser.add_argument("-c", "--config", help="config to parse")
-            # parser.add_argument("-t", "--timerange", nargs='?',
-            #                    help="timerange as per freqtrade format, e.g. 20210401-, 20210101-20210201, etc")
-            # parser.add_argument("-o", "--outfile", help="path where output the pairlist", type=argparse.FileType('w'))
-            # parser.add_argument("-mp", "--minprice", help="price for price filter")
-            # parser.add_argument("-tf", "--timeframe", help="timeframe of loaded candles data")
-            # parser.add_argument("-na", "--numberassets", help="number of assets to be filtered")
-
-            parser.add_argument("--exchange", default="gateio binance kucoin okex")
+            parser.add_argument("--exchange", default="gateio binance okex kucoin")
             parser.add_argument("--stake_currency", default="USDT BUSD BTC")
             parser.add_argument("--trading_mode", default="futures spot")
             parser.add_argument("--data_format", default="jsongz")
             parser.add_argument("--tradable_only", default="True")
             parser.add_argument("--active_only", default="True")
             parser.add_argument("--download_data", default="True")
+            parser.add_argument("--intervals", default="monthly weekly daily")
+            parser.add_argument("--asset_filter_prices", default="0 0.01 0.02 0.05 0.15 0.5")
+            parser.add_argument("--number_assets", default="30 45 60 75 90 105 120 200")
 
             args = parser.parse_args()
 
-            # Make this arg parse-able
-            # And add blacklist
             START_DATE_STR = '20180101 00:00:00'
             # wanted to have only monthly outputs, you can delete that replace thingy
             # in the next row if you want up to the current day.
@@ -284,13 +278,11 @@ class generator:
             start_string = START_DATE_STR.split(' ')[0]
             end_string = END_DATE_STR.split(' ')[0]
 
-            # For now it shouldn't be less than a day because it's outputs object with timerage suitable for backtesting
-            # for easy copying eg. 20210501-20210602
-            INTERVAL_ARR = ['monthly', 'weekly', 'daily']
-            ASSET_FILTER_PRICE_ARR = [0, 0.01, 0.02, 0.05, 0.15, 0.5]
-            NUMBER_ASSETS_ARR = [30, 45, 60, 75, 90, 105, 120, 200]
+            INTERVAL_ARR = args.intervals.split(' ')
+            ASSET_FILTER_PRICE_ARR = [float(ele) for ele in args.asset_filter_prices.split(' ')]
+            NUMBER_ASSETS_ARR = [int(ele) for ele in args.number_assets.split(' ')]
 
-            split_exchange = args.exchange.split(" ")
+            #split_exchange = args.exchange.split(" ")
             self.DATA_FORMAT = args.data_format
 
             self.TRADABLE_ONLY = self.is_bool(args.tradable_only)
