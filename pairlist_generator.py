@@ -355,7 +355,7 @@ class generator:
                                                 data = json.load(f1)
 
                                             data['trading_mode'] = self.TRADING_MODE_NAME.lower()
-                                            data['stake_currency'] = self.STAKE_CURRENCY_NAME.lower()
+                                            data['stake_currency'] = self.STAKE_CURRENCY_NAME.upper()
                                             data['exchange']['name'] = self.EXCHANGE_NAME.lower()
                                             data['exchange']['pair_whitelist'].clear()
                                             for pair in whitelist:
