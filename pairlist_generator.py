@@ -130,8 +130,7 @@ class generator:
 
     def get_pairs(self):
         try:
-            pairs = self.exchange.get_markets(base_currencies="",
-                                              quote_currencies=self.STAKE_CURRENCY_NAME,
+            pairs = self.exchange.get_markets(quote_currencies=[self.STAKE_CURRENCY_NAME],
                                               tradable_only=self.TRADABLE_ONLY,
                                               active_only=self.ACTIVE_ONLY,
                                               spot_only=self.SPOT_ONLY,
@@ -271,7 +270,7 @@ class generator:
 
             args = parser.parse_args()
 
-            START_DATE_STR = '20180101 00:00:00'
+            START_DATE_STR = '20171201 00:00:00'
             # wanted to have only monthly outputs, you can delete that replace thingy
             # in the next row if you want up to the current day.
             END_DATE_STR = datetime.today().replace(day=1).strftime('%Y%m%d') + ' 00:00:00'
@@ -293,6 +292,9 @@ class generator:
                 self.EXCHANGE_NAME = single_exchange
                 for single_trading_mode in args.trading_mode.split(" "):
                     self.TRADING_MODE_NAME = single_trading_mode
+                    del_root_path = f'user_data/pairlists/{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}'
+                    shutil.rmtree(del_root_path, True)
+
                     for single_currency_name in args.stake_currency.split(" "):
                         self.STAKE_CURRENCY_NAME = single_currency_name
 
@@ -303,7 +305,7 @@ class generator:
                         else:
                             print("Status: downloading data...")
                             download_args = {"pairs": self.pairs,
-                                             "include_inactive": True,
+                                             "include_inactive": False,
                                              "timerange": start_string + "-" + end_string,
                                              "download_trades": False,
                                              "exchange": self.EXCHANGE_NAME,
@@ -348,9 +350,9 @@ class generator:
                                                         f'.json'
 
                                             os.makedirs(os.path.dirname(file_name), exist_ok=True)
+
                                             shutil.copy(self.CONFIG_TEMPLATE_PATH,
                                                         file_name)
-
                                             with open(file_name, 'r') as f1:
                                                 data = json.load(f1)
 
@@ -358,6 +360,7 @@ class generator:
                                             data['stake_currency'] = self.STAKE_CURRENCY_NAME.upper()
                                             data['exchange']['name'] = self.EXCHANGE_NAME.lower()
                                             data['exchange']['pair_whitelist'].clear()
+                                            #todo: make blacklist trigger (currently only whitelist is in effect)
                                             for pair in whitelist:
                                                 data['exchange']['pair_whitelist'].append(pair)
 
