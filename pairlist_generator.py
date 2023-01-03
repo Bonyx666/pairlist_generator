@@ -236,7 +236,7 @@ class generator:
         result = {}
         for date_slice in date_slices:
             df_slice = df[(df.date >= date_slice['start']) & (df.date < date_slice['end'])].copy()
-            summarised = df_slice.sum()
+            summarised = df_slice.sum(numeric_only=True)
             summarised = summarised[summarised > 0]
             summarised = summarised.sort_values(ascending=False)
 
@@ -247,7 +247,8 @@ class generator:
 
             if len(result_pairs_list) > 0:
                 result[
-                    f'{date_slice["start"].strftime(self.DATE_FORMAT)}-{date_slice["end"].strftime(self.DATE_FORMAT)}'] = result_pairs_list
+                    f'{date_slice["start"].strftime(self.DATE_FORMAT)}-{date_slice["end"].strftime(self.DATE_FORMAT)}'] \
+                    = result_pairs_list
 
         return result
 
@@ -281,7 +282,7 @@ class generator:
             ASSET_FILTER_PRICE_ARR = [float(ele) for ele in args.asset_filter_prices.split(' ')]
             NUMBER_ASSETS_ARR = [int(ele) for ele in args.number_assets.split(' ')]
 
-            #split_exchange = args.exchange.split(" ")
+            # split_exchange = args.exchange.split(" ")
             self.DATA_FORMAT = args.data_format
 
             self.TRADABLE_ONLY = self.is_bool(args.tradable_only)
@@ -337,9 +338,10 @@ class generator:
                                                                               date_slices,
                                                                               number_assets,
                                                                               self)
-                                        for slice in result_obj:
-                                            end_date_config_file = slice.split("-")[1]
-                                            whitelist = result_obj[slice]
+                                        for index, (timerange, current_slice) in enumerate(result_obj.items()):
+                                            end_date_config_file = timerange.split("-")[1]
+                                            whitelist = current_slice
+
                                             file_name = f'user_data/pairlists/' \
                                                         f'{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}/' \
                                                         f'{self.STAKE_CURRENCY_NAME}/' \
@@ -347,6 +349,14 @@ class generator:
                                                         f'{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_' \
                                                         f'{str(asset_filter_price).replace(".", ",")}' \
                                                         f'_minprice_{end_date_config_file}' \
+                                                        f'.json'
+                                            last_slice_file_name = f'user_data/pairlists/' \
+                                                        f'{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}/' \
+                                                        f'{self.STAKE_CURRENCY_NAME}/' \
+                                                        f'{interval}/' \
+                                                        f'{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_' \
+                                                        f'{str(asset_filter_price).replace(".", ",")}' \
+                                                        f'_minprice_current' \
                                                         f'.json'
 
                                             os.makedirs(os.path.dirname(file_name), exist_ok=True)
@@ -360,9 +370,14 @@ class generator:
                                             data['stake_currency'] = self.STAKE_CURRENCY_NAME.upper()
                                             data['exchange']['name'] = self.EXCHANGE_NAME.lower()
                                             data['exchange']['pair_whitelist'].clear()
-                                            #todo: make blacklist trigger (currently only whitelist is in effect)
+                                            # todo: make blacklist trigger (currently only whitelist is in effect)
                                             for pair in whitelist:
                                                 data['exchange']['pair_whitelist'].append(pair)
+
+                                            # If this is the last slice, do something else
+                                            if index == len(result_obj) - 1:
+                                                with open(last_slice_file_name, 'w') as f2:
+                                                    json.dump(data, f2, indent=4)
 
                                             with open(file_name, 'w') as f2:
                                                 json.dump(data, f2, indent=4)
