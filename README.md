@@ -1,4 +1,4 @@
-# freqtrade-stuff
+# Pairlist generator
 Use the examples / information here at your own risk.
 
 If you don't care about how to use that code then you dont need to look at it.
