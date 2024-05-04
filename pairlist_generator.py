@@ -1,34 +1,26 @@
-import fileinput
-import shutil
+import concurrent.futures
+import json
+import os
+from datetime import datetime
 from pathlib import Path
 
 import freqtrade.commands.data_commands
-from freqtrade.configuration import Configuration
-from freqtrade.data.history import load_pair_history
-from freqtrade.resolvers import ExchangeResolver
-from freqtrade.plugins.pairlistmanager import PairListManager
-import pandas as pd
-from freqtrade.enums import CandleType, MarginMode, TradingMode
-from datetime import datetime, timedelta
-from freqtrade.data.history.history_utils import (_download_pair_history, _download_trades_history,
-                                                  _load_cached_data_for_updating,
-                                                  convert_trades_to_ohlcv, get_timerange, load_data,
-                                                  load_pair_history, refresh_backtest_ohlcv_data,
-                                                  refresh_backtest_trades_data, refresh_data,
-                                                  validate_backtest_data)
 import nest_asyncio
-import re
+import pandas as pd
 from dateutil.relativedelta import *
-import json
-import os
-import argparse
-import numpy
+from freqtrade.configuration import Configuration
+from freqtrade.data.history.history_utils import (load_pair_history)
+from freqtrade.enums import CandleType, MarginMode, TradingMode
+from freqtrade.exchange import list_available_exchanges
+from freqtrade.plugins.pairlistmanager import PairListManager
+from freqtrade.resolvers import ExchangeResolver
+from tqdm import tqdm
 
 nest_asyncio.apply()
+os.nice(19)
 
 
-class generator:
-    CONFIG_TEMPLATE_PATH = 'pairlist_generator_config_template.json'
+class Generator:
     STAKE_CURRENCY_NAME = ''
     EXCHANGE_NAME = ''
     TRADING_MODE_NAME = ''
@@ -47,9 +39,9 @@ class generator:
     FUTURES_ONLY = False
     SPOT_ONLY = True
 
-    def is_bool(s):
-        bool_var = s.lower() in ['true', '1', 't', 'y', 'yes', 'yeah', 'yup', 'certainly']
-        return bool_var
+    def __init__(self):
+        self.CANDLE_TYPE = None
+        self.TRADING_MODES = None
 
     def set_config(self):
         self.config = Configuration.from_files([])
@@ -61,37 +53,6 @@ class generator:
             f'.*/{self.STAKE_CURRENCY_NAME}',
         ]
         self.config['exchange']['pair_blacklist'] = []
-        '''# // Major coins
-        "(BTC|ETH)/.*",
-        # // BINANCE:
-        # // Exchange
-        "(BNB)/.*",
-        # // Leverage
-        ".*(_PREMIUM|BEAR|BULL|DOWN|HALF|HEDGE|UP|[1235][SL])/.*",
-        # // Fiat
-        "(AUD|BRZ|CAD|CHF|EUR|GBP|HKD|IDRT|JPY|NGN|RUB|SGD|TRY|UAH|USD|ZAR)/.*",
-        # // Stable
-        "(BUSD|CUSDT|DAI|PAXG|SUSD|TUSD|USDC|USDP|USDT|VAI)/.*",
-        # // FAN
-        "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LAZIO|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
-        # // Others
-        "(CHZ|CTXC|HBAR|NMR|SHIB|SLP|XVS|ONG|ARDR)/.*",
-
-        # // KUCOIN:
-        # // Exchange Tokens
-        "KCS/.*",
-        # // Leverage tokens
-        ".*(3|3L|3S|5L|5S)/.*",
-        # // Fiat
-        "(AUD|EUR|GBP|CHF|CAD|JPY)/.*",
-        # // Stable tokens
-        "(BUSD|USDT|TUSD|USDC|CUSDT|DAI|USDN|CUSD)/.*",
-        # // FAN Tokens
-        "(ACM|AFA|ALA|ALL|APL|ASR|ATM|BAR|CAI|CITY|FOR|GAL|GOZ|IBFK|JUV|LEG|LOCK-1|NAVI|NMR|NOV|OG|PFL|PORTO|PSG|ROUSH|STV|TH|TRA|UCH|UFC|YBO)/.*",
-        # // Other Coins
-        "(CHZ|SLP|XVS|MEM|AMPL|XYM|POLX|CARR|SKEY|MASK|KLV|TLOS)/.*"
-        ]
-        '''
         self.config['pairlists'] = [
             {
                 "method": "StaticPairList",
@@ -100,7 +61,7 @@ class generator:
 
         if self.TRADING_MODE_NAME == "spot":
             self.config['trading_mode'] = TradingMode.SPOT
-            self.config['margin_mode'] = MarginMode.NONE
+            self.config['margin_mode'] = MarginMode.ISOLATED
             self.CANDLE_TYPE = CandleType.SPOT
             self.FUTURES_ONLY = False
             self.SPOT_ONLY = True
@@ -113,20 +74,20 @@ class generator:
             self.SPOT_ONLY = False
             self.config['candle_type_def'] = CandleType.FUTURES
 
-        self.exchange = ExchangeResolver.load_exchange(self.config['exchange']['name'], self.config, validate=False)
+        self.exchange = ExchangeResolver.load_exchange(self.config, validate=False)
 
         self.pairlists = PairListManager(self.exchange, self.config)
         # self.pairlists.refresh_pairlist()
         # self.pairs = self.pairlists.whitelist
         self.data_location = Path(self.config['user_data_dir'], 'data', self.config['exchange']['name'])
 
-        self.pairs = list(self.get_pairs(self))
+        self.pairs = list(self.get_pairs())
         self.config['exchange']['pair_whitelist'] = self.pairs
 
-        print(f"found {str(len(self.config['exchange']['pair_whitelist']))} "
-              f"pairs on {self.config['exchange']['name']}"
-              f", market:{str(self.config['trading_mode']).split('.')[1].lower()}"
-              f", stake:{self.config['stake_currency']}")
+        #print(f"found {str(len(self.config['exchange']['pair_whitelist']))} "
+        #      f"pairs on {self.config['exchange']['name']}"
+        #      f", market:{str(self.config['trading_mode']).split('.')[1].lower()}"
+        #      f", stake:{self.config['stake_currency']}")
 
     def get_pairs(self):
         try:
@@ -139,10 +100,10 @@ class generator:
             # Sort the pairs/markets by symbol
             pairs = dict(sorted(pairs.items()))
         except Exception as e:
-            raise (f"Cannot get markets. Reason: {e}") from e
+            raise f"Cannot get markets. Reason: {e}" from e
         return pairs
 
-    def get_data_slices_dates(df, start_date_str, end_date_str, interval, self):
+    def get_data_slices_dates(self, start_date_str, end_date_str, interval):
         # df_start_date = df.date.min()
         # df_end_date = df.date.max()
 
@@ -155,7 +116,6 @@ class generator:
         start_date = defined_start_date
         end_date = defined_end_date
 
-        # time_delta = timedelta(hours=interval_hr)
         if interval == 'monthly':
             time_delta = relativedelta(months=+1)
         elif interval == 'weekly':
@@ -218,12 +178,8 @@ class generator:
                 if full_dataframe.empty:
                     full_dataframe = candles[['date', column_name]].copy()
                 else:
-                    # this row (as it was in the original) cut off the dataframe depending on the first (hence the how='left' candle of the the pair. Outer merges both including the new timerange of the 2ndary pairs.
-                    # full_dataframe = pd.merge(full_dataframe, candles[['date', column_name]].copy(), on='date', how='left')
                     full_dataframe = pd.merge(full_dataframe, candles[['date', column_name]].copy(), on='date',
                                               how='outer')
-                # print("Loaded " + str(len(candles)) + f" rows of data for {pair} from {data_location}")
-                # print(full_dataframe.tail(1))
 
         # print(full_dataframe.head())
 
@@ -232,7 +188,7 @@ class generator:
 
         return full_dataframe
 
-    def process_date_slices(df, date_slices, number_assets, self):
+    def process_date_slices(self, df, date_slices, number_assets):
         result = {}
         for date_slice in date_slices:
             df_slice = df[(df.date >= date_slice['start']) & (df.date < date_slice['end'])].copy()
@@ -252,140 +208,162 @@ class generator:
 
         return result
 
-    def main(self):
-        if os.path.exists(self.CONFIG_TEMPLATE_PATH):
+    def main(self, exchange):
+        self.CANDLE_TYPE = CandleType.SPOT
 
-            self.CANDLE_TYPE = CandleType.SPOT
-            parser = argparse.ArgumentParser()
+        self.START_DATE_STR = '20171201 00:00:00'
+        # in the next row if you want up to the current day.
+        self.END_DATE_STR = datetime.today().replace(day=1).strftime('%Y%m%d') + ' 00:00:00'
+        self.start_string = self.START_DATE_STR.split(' ')[0]
+        self.end_string = self.END_DATE_STR.split(' ')[0]
 
-            parser.add_argument("--exchange", default="gateio binance okex kucoin")
-            parser.add_argument("--stake_currency", default="USDT BUSD BTC")
-            parser.add_argument("--trading_mode", default="futures spot")
-            parser.add_argument("--data_format", default="jsongz")
-            parser.add_argument("--tradable_only", default="True")
-            parser.add_argument("--active_only", default="True")
-            parser.add_argument("--download_data", default="True")
-            parser.add_argument("--intervals", default="monthly weekly daily")
-            parser.add_argument("--asset_filter_prices", default="0 0.01 0.02 0.05 0.15 0.5")
-            parser.add_argument("--number_assets", default="30 45 60 75 90 105 120 200")
+        self.INTERVAL_ARR = ["monthly"]
+        self.ASSET_FILTER_PRICE_ARR = [0, 0.01, 0.02, 0.05, 0.15, 0.5]
+        self.NUMBER_ASSETS_ARR = [30, 45, 60, 75, 90, 105, 120, 200, 99999]
 
-            args = parser.parse_args()
+        # split_exchange = args.exchange.split(" ")
+        self.DATA_FORMAT = "jsongz"
 
-            START_DATE_STR = '20171201 00:00:00'
-            # wanted to have only monthly outputs, you can delete that replace thingy
-            # in the next row if you want up to the current day.
-            END_DATE_STR = datetime.today().replace(day=1).strftime('%Y%m%d') + ' 00:00:00'
-            start_string = START_DATE_STR.split(' ')[0]
-            end_string = END_DATE_STR.split(' ')[0]
+        self.TRADABLE_ONLY = False
+        self.ACTIVE_ONLY = False
+        self.DOWNLOAD_DATA = True
+        self.TRADING_MODES = ["futures", "spot"]
+        self.EXCHANGE_NAME = exchange
+        for single_trading_mode in self.TRADING_MODES:
+            self.TRADING_MODE_NAME = single_trading_mode
 
-            INTERVAL_ARR = args.intervals.split(' ')
-            ASSET_FILTER_PRICE_ARR = [float(ele) for ele in args.asset_filter_prices.split(' ')]
-            NUMBER_ASSETS_ARR = [int(ele) for ele in args.number_assets.split(' ')]
+            for single_currency_name in ["USDT", "BUSD", "TUSD", "BTC", "EUR", "USD", "ETH"]:
+                self.STAKE_CURRENCY_NAME = single_currency_name
 
-            # split_exchange = args.exchange.split(" ")
-            self.DATA_FORMAT = args.data_format
+                self.set_config()
+                if len(self.config['exchange']['pair_whitelist']) == 0:
+                    # print("-- Skipping this download/calculation part since there are no pairs here...")
+                    pass
+                else:
+                    #print(f"Status: {self.exchange}|{single_trading_mode}, downloading data...")
+                    download_args = {"pairs": self.pairs,
+                                     "include_inactive": True,
+                                     "timerange": self.start_string + "-" + self.end_string,
+                                     "download_trades": False,
+                                     "exchange": self.EXCHANGE_NAME,
+                                     "timeframes": [self.config["timeframe"]],
+                                     "trading_mode": self.config['trading_mode'],
+                                     "dataformat_ohlcv": self.DATA_FORMAT,
+                                     }
 
-            self.TRADABLE_ONLY = self.is_bool(args.tradable_only)
-            self.ACTIVE_ONLY = self.is_bool(args.active_only)
-            self.DOWNLOAD_DATA = self.is_bool(args.download_data)
+                    if self.DOWNLOAD_DATA:
+                        freqtrade.commands.data_commands.start_download_data(download_args)
 
-            for single_exchange in args.exchange.split(" "):
-                self.EXCHANGE_NAME = single_exchange
-                for single_trading_mode in args.trading_mode.split(" "):
-                    self.TRADING_MODE_NAME = single_trading_mode
-                    del_root_path = f'user_data/pairlists/{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}'
-                    shutil.rmtree(del_root_path, True)
+                    # print(f"Status: {self.exchange}|{single_trading_mode}, calculating pairlists...")
+                    for asset_filter_price in self.ASSET_FILTER_PRICE_ARR:
 
-                    for single_currency_name in args.stake_currency.split(" "):
-                        self.STAKE_CURRENCY_NAME = single_currency_name
+                        volume_dataframe = self.process_candles_data(asset_filter_price)
 
-                        self.set_config(self)
+                        if volume_dataframe.empty:
+                            continue
 
-                        if len(self.config['exchange']['pair_whitelist']) == 0:
-                            print("-- Skipping this download/calculation part since there are no pairs here...")
-                        else:
-                            print("Status: downloading data...")
-                            download_args = {"pairs": self.pairs,
-                                             "include_inactive": False,
-                                             "timerange": start_string + "-" + end_string,
-                                             "download_trades": False,
-                                             "exchange": self.EXCHANGE_NAME,
-                                             "timeframes": [self.config["timeframe"]],
-                                             "trading_mode": self.config['trading_mode'],
-                                             "dataformat_ohlcv": self.DATA_FORMAT,
-                                             }
-                            if self.DOWNLOAD_DATA:
-                                freqtrade.commands.data_commands.start_download_data(download_args)
+                        for interval in self.INTERVAL_ARR:
+                            date_slices = self.get_data_slices_dates(
+                                self.START_DATE_STR,
+                                self.END_DATE_STR,
+                                interval)
+                            path_prefix = os.path.join(
+                                os.getcwd(), 'user_data', 'pairlists',
+                                f'{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}',
+                                f'{self.STAKE_CURRENCY_NAME}',
+                                f'{interval}'
+                            )
+                            if not os.path.exists(path_prefix):
+                                os.makedirs(path_prefix)
 
-                            print("Status: calculating pairlists...")
-                            for asset_filter_price in ASSET_FILTER_PRICE_ARR:
+                            for number_assets in self.NUMBER_ASSETS_ARR:
+                                result_obj = self.process_date_slices(volume_dataframe,
+                                                                      date_slices,
+                                                                      number_assets)
+                                for index, (timerange, current_slice) in enumerate(result_obj.items()):
+                                    end_date_config_file = timerange.split("-")[1]
+                                    whitelist = current_slice
+                                    file_prefix = f'{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_' \
+                                                  f'{str(asset_filter_price).replace(".", ",")}' \
+                                                  f'_minprice_'
+                                    file_name = os.path.join(
+                                        path_prefix, f'{file_prefix}{end_date_config_file}.json')
+                                    last_slice_file_name = os.path.join(
+                                        path_prefix, f'{file_prefix}_minprice_current.json')
 
-                                volume_dataframe = self.process_candles_data(self, asset_filter_price)
+                                    os.makedirs(os.path.dirname(file_name), exist_ok=True)
 
-                                if volume_dataframe.empty:
-                                    continue
+                                    # delete the single file if it exists instead of all files as previously
+                                    # this makes updating the pairlists smoother,
+                                    # enabling backtests to be running while it updates.
 
-                                for interval in INTERVAL_ARR:
-                                    date_slices = self.get_data_slices_dates(
-                                        volume_dataframe,
-                                        START_DATE_STR,
-                                        END_DATE_STR,
-                                        interval,
-                                        self)
+                                    data = {
+                                        "pairlists": [
+                                            {
+                                                "method": "StaticPairList"
+                                            }
+                                        ],
+                                        "trading_mode": self.TRADING_MODE_NAME.lower(),
+                                        "margin_mode": "isolated",
+                                        "stake_currency": self.STAKE_CURRENCY_NAME.upper(),
+                                        "exchange": {
+                                            "name": self.EXCHANGE_NAME.lower(),
+                                            "key": "",
+                                            "secret": "",
+                                            "pair_whitelist": whitelist,
+                                            "pair_blacklist": []
+                                        }
+                                    }
 
-                                    for number_assets in NUMBER_ASSETS_ARR:
-                                        result_obj = self.process_date_slices(volume_dataframe,
-                                                                              date_slices,
-                                                                              number_assets,
-                                                                              self)
-                                        for index, (timerange, current_slice) in enumerate(result_obj.items()):
-                                            end_date_config_file = timerange.split("-")[1]
-                                            whitelist = current_slice
+                                    # If this is the last slice, do something else
+                                    if index == len(result_obj) - 1:
+                                        if os.path.exists(last_slice_file_name):
+                                            os.remove(last_slice_file_name)
+                                        with open(last_slice_file_name, 'w') as f2:
+                                            json.dump(data, f2, indent=4)
 
-                                            file_name = f'user_data/pairlists/' \
-                                                        f'{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}/' \
-                                                        f'{self.STAKE_CURRENCY_NAME}/' \
-                                                        f'{interval}/' \
-                                                        f'{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_' \
-                                                        f'{str(asset_filter_price).replace(".", ",")}' \
-                                                        f'_minprice_{end_date_config_file}' \
-                                                        f'.json'
-                                            last_slice_file_name = f'user_data/pairlists/' \
-                                                        f'{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}/' \
-                                                        f'{self.STAKE_CURRENCY_NAME}/' \
-                                                        f'{interval}/' \
-                                                        f'{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_' \
-                                                        f'{str(asset_filter_price).replace(".", ",")}' \
-                                                        f'_minprice_current' \
-                                                        f'.json'
+                                    if os.path.exists(file_name):
+                                        os.remove(file_name)
+                                    with open(file_name, 'w') as f2:
+                                        json.dump(data, f2, indent=4)
 
-                                            os.makedirs(os.path.dirname(file_name), exist_ok=True)
-
-                                            shutil.copy(self.CONFIG_TEMPLATE_PATH,
-                                                        file_name)
-                                            with open(file_name, 'r') as f1:
-                                                data = json.load(f1)
-
-                                            data['trading_mode'] = self.TRADING_MODE_NAME.lower()
-                                            data['stake_currency'] = self.STAKE_CURRENCY_NAME.upper()
-                                            data['exchange']['name'] = self.EXCHANGE_NAME.lower()
-                                            data['exchange']['pair_whitelist'].clear()
-                                            # todo: make blacklist trigger (currently only whitelist is in effect)
-                                            for pair in whitelist:
-                                                data['exchange']['pair_whitelist'].append(pair)
-
-                                            # If this is the last slice, do something else
-                                            if index == len(result_obj) - 1:
-                                                with open(last_slice_file_name, 'w') as f2:
-                                                    json.dump(data, f2, indent=4)
-
-                                            with open(file_name, 'w') as f2:
-                                                json.dump(data, f2, indent=4)
-
-                            # Save result object as json to --outfile location
-                            print(f'Done {self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}_{self.STAKE_CURRENCY_NAME}')
-        else:
-            print(f'path {self.CONFIG_TEMPLATE_PATH} does not exist. shutting down!")')
+                    # print(f'Done {self.exchange}|{single_trading_mode}|{self.STAKE_CURRENCY_NAME}')
 
 
-generator.main(generator)
+exchanges = list_available_exchanges(True)
+# remove any exchange that is named futures to remove duplicates
+# remove bitfinex since bitfinex2 is the same as bitfinex2, but bitfinex2 has the newer api version
+# same for hitbtc and hitbtc3
+# remote gateio since gate is the same (rebranding)
+exchanges_names = [
+    exchange['name'] for exchange in exchanges
+    if (exchange['name'] != 'gateio'
+        and exchange['name'] != 'bitfinex'
+        and exchange['name'] != 'hitbtc'
+        and 'futures' not in exchange['name']
+        )
+]
+
+
+# Define a function to process each exchange
+def process_exchange(current_exchange):
+    Generator().main(current_exchange)
+
+
+# easier debugging, only with one thread
+# for exchange_name in exchanges_names:
+#    process_exchange(exchange_name)
+
+with concurrent.futures.ProcessPoolExecutor(max_workers=len(exchanges_names)) as executor:
+    futures = {executor.submit(process_exchange, exchange_name): exchange_name for exchange_name in exchanges_names}
+
+    with tqdm(total=len(exchanges_names), desc="Processing exchanges") as pbar:
+        for future in concurrent.futures.as_completed(futures):
+            pbar.update(1)
+            exchange_name = futures[future]
+            del futures[future]
+            remaining_tasks = len(futures)
+            remaining_exchanges = ', '.join(list(futures.values()))
+            pbar.set_description(f"Processing: {remaining_exchanges}")
+
+print("DONE!")
