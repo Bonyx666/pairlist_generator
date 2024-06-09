@@ -3,6 +3,7 @@ import concurrent.futures
 import copy
 import fnmatch
 import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -61,7 +62,7 @@ class Generator:
         self.pairs_market_currency = []
         os.nice(19)
         self.INTERVAL_ARR = ["monthly"]
-        self.ASSET_FILTER_PRICE_ARR = [0, 0.01, 0.02, 0.05, 0.15, 0.5]
+        self.ASSET_FILTER_PRICE_ARR = [0.0, 0.01, 0.02, 0.05, 0.15, 0.5]
         self.NUMBER_ASSETS_ARR = [30, 45, 60, 75, 90, 105, 120, 200, 99999]
 
         self.DATA_FORMAT = "jsongz"
@@ -76,23 +77,6 @@ class Generator:
         self.start_string = self.START_DATE_STR.split(" ")[0]
         self.end_string = self.END_DATE_STR.split(" ")[0]
 
-        self.template_config = {
-            "pairlists": [
-                {
-                    "method": "StaticPairList"
-                }
-            ],
-            "trading_mode": self.TRADING_MODE_NAME.lower(),
-            "margin_mode": "isolated",
-            "stake_currency": self.STAKE_CURRENCY_NAME.upper(),
-            "exchange": {
-                "name": self.EXCHANGE_NAME.lower(),
-                "key": "",
-                "secret": "",
-                "pair_whitelist": [],
-                "pair_blacklist": []
-            }
-        }
         self.base_volume = None
 
     def set_config(self):
@@ -199,6 +183,7 @@ class Generator:
 
         compared_pairs = [pair for pair in self.pairs_market_currency if
                           fnmatch.fnmatch(pair, "*SHIB/*") or
+                          fnmatch.fnmatch(pair, "*PEPE/*") or
                           fnmatch.fnmatch(pair, "*FLOKI/*") or
                           fnmatch.fnmatch(pair, "*DOGE/*") or
                           fnmatch.fnmatch(pair, "*XRP/*") or
@@ -344,7 +329,7 @@ class Generator:
             # for spot on the other hand ... well, good luck - if they work, they work. If not, not.
             if (
                     single_trading_mode == "futures" and
-                    self.EXCHANGE_NAME not in ["binance", "okx", "gateio", "bybit", "binanceus"]
+                    self.EXCHANGE_NAME not in ["binance", "okx", "gate", "bybit", "binanceus"]
             ):
                 continue
 
@@ -361,16 +346,17 @@ class Generator:
                 if len(self.config["exchange"]["pair_whitelist"]) == 0:
                     continue
 
-                download_args = {"pairs": self.config["exchange"]["pair_whitelist"],
-                                 "include_inactive": True,
-                                 "timerange": self.start_string + "-" + self.end_string,
-                                 "download_trades": False,
-                                 "exchange": self.EXCHANGE_NAME,
-                                 "timeframes": [self.config["timeframe"]],
-                                 "trading_mode": self.config["trading_mode"],
-                                 "dataformat_ohlcv": self.DATA_FORMAT,
-                                 }
-                freqtrade.commands.data_commands.start_download_data(download_args)
+                if exchange != "kraken":
+                    download_args = {"pairs": self.config["exchange"]["pair_whitelist"],
+                                     "include_inactive": True,
+                                     "timerange": self.start_string + "-" + self.end_string,
+                                     "download_trades": False,
+                                     "exchange": self.EXCHANGE_NAME,
+                                     "timeframes": [self.config["timeframe"]],
+                                     "trading_mode": self.config["trading_mode"],
+                                     "dataformat_ohlcv": self.DATA_FORMAT,
+                                     }
+                    freqtrade.commands.data_commands.start_download_data(download_args)
 
                 self.base_volume = self.calculate_is_base_volume()
                 if self.base_volume is None:
@@ -411,7 +397,23 @@ class Generator:
 
                                 os.makedirs(os.path.dirname(file_name), exist_ok=True)
 
-                                data = copy.deepcopy(self.template_config)
+                                data = {
+                                    "pairlists": [
+                                        {
+                                            "method": "StaticPairList"
+                                        }
+                                    ],
+                                    "trading_mode": self.TRADING_MODE_NAME.lower(),
+                                    "margin_mode": "isolated",
+                                    "stake_currency": self.STAKE_CURRENCY_NAME.upper(),
+                                    "exchange": {
+                                        "name": self.EXCHANGE_NAME,
+                                        "key": "",
+                                        "secret": "",
+                                        "pair_whitelist": [],
+                                        "pair_blacklist": []
+                                    }
+                                }
                                 data["exchange"]["pair_whitelist"] = whitelist
 
                                 if os.path.exists(file_name):
@@ -422,7 +424,7 @@ class Generator:
                                 # If this is the last slice, additionally create a _current.json
                                 if index == len(slices) - 1:
                                     last_slice_file_name = os.path.join(
-                                        path_prefix, f"{file_prefix}_minprice_current.json")
+                                        path_prefix, f"{file_prefix}_current.json")
                                     if os.path.exists(last_slice_file_name):
                                         os.remove(last_slice_file_name)
                                     with open(last_slice_file_name, "w") as f2:
@@ -462,6 +464,14 @@ def process_exchange(current_exchange):
 jobs = args.jobs
 if jobs == -1:
     jobs = len(exchanges_names)
+
+if "kraken" in exchanges_names:
+    print("We found the exchange kraken, it is assumed you downloaded AND "
+                 "converted the csv-data to daily candles already as per "
+                 "https://www.freqtrade.io/en/stable/exchanges/#historic-kraken-data . "
+                 "it would otherwise take ages to do anything since we would have to "
+                 "download all trade data from 2018 up to today with a query limit "
+                 "of several seconds each.")
 
 with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
     futures = {executor.submit(process_exchange, exchange_name): exchange_name for exchange_name in exchanges_names}
