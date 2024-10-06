@@ -88,6 +88,7 @@ class Generator:
         self.config["exchange"]["pair_whitelist"] = [
             f".*/{self.STAKE_CURRENCY_NAME}",
         ]
+
         self.config["exchange"]["pair_blacklist"] = []
         self.config["pairlists"] = [
             {
@@ -113,7 +114,9 @@ class Generator:
         self.exchange = ExchangeResolver.load_exchange(self.config, validate=False)
 
         self.pairlists = PairListManager(self.exchange, self.config)
-        self.data_location = Path(self.config["user_data_dir"], "data", self.config["exchange"]["name"])
+        self.data_location = Path(self.config["user_data_dir"],
+                                  "data_pairlist_generator",
+                                  self.config["exchange"]["name"])
 
         if self.STAKE_CURRENCY_NAME != "":
             self.pairs_market_currency = self.exchange.get_markets(
@@ -200,7 +203,8 @@ class Generator:
             timeframe=self.config["timeframe"],
             pair=btc_pairs[0],
             data_format=self.DATA_FORMAT,
-            candle_type=self.CANDLE_TYPE
+            candle_type=self.CANDLE_TYPE,
+
         )
 
         candles_comparison = []
@@ -249,7 +253,7 @@ class Generator:
                 timeframe=self.config["timeframe"],
                 pair=pair,
                 data_format=self.DATA_FORMAT,
-                candle_type=self.CANDLE_TYPE
+                candle_type=self.CANDLE_TYPE,
             )
 
             if len(candles):
@@ -346,16 +350,22 @@ class Generator:
                 if len(self.config["exchange"]["pair_whitelist"]) == 0:
                     continue
 
+                download_args = {"pairs": self.config["exchange"]["pair_whitelist"],
+                                 "include_inactive": True,
+                                 "timerange": self.start_string + "-" + self.end_string,
+                                 "download_trades": False,
+                                 "exchange": self.EXCHANGE_NAME,
+                                 "timeframes": [self.config["timeframe"]],
+                                 "trading_mode": self.config["trading_mode"],
+                                 "dataformat_ohlcv": self.DATA_FORMAT,
+                                 "datadir": self.data_location
+                                 }
+
+                # Just try to download data from kraken, you ll LOVE it -.-
+                #if exchange == "kraken":
+                #    download_args["download_trades"] = True
+
                 if exchange != "kraken":
-                    download_args = {"pairs": self.config["exchange"]["pair_whitelist"],
-                                     "include_inactive": True,
-                                     "timerange": self.start_string + "-" + self.end_string,
-                                     "download_trades": False,
-                                     "exchange": self.EXCHANGE_NAME,
-                                     "timeframes": [self.config["timeframe"]],
-                                     "trading_mode": self.config["trading_mode"],
-                                     "dataformat_ohlcv": self.DATA_FORMAT,
-                                     }
                     freqtrade.commands.data_commands.start_download_data(download_args)
 
                 self.base_volume = self.calculate_is_base_volume()
@@ -424,7 +434,7 @@ class Generator:
                                 # If this is the last slice, additionally create a _current.json
                                 if index == len(slices) - 1:
                                     last_slice_file_name = os.path.join(
-                                        path_prefix, f"{file_prefix}_current.json")
+                                        path_prefix, f"{file_prefix}current.json")
                                     if os.path.exists(last_slice_file_name):
                                         os.remove(last_slice_file_name)
                                     with open(last_slice_file_name, "w") as f2:
@@ -440,11 +450,11 @@ if args.exchanges == "":
     # same for hitbtc and hitbtc3
     # remote gateio since gate is the same (rebranding)
     exchanges_names = [
-        exchange["name"] for exchange in exchanges
-        if (exchange["name"] != "gateio"
-            and exchange["name"] != "bitfinex"
-            and exchange["name"] != "hitbtc"
-            and "futures" not in exchange["name"]
+        exchange["classname"] for exchange in exchanges
+        if (exchange["classname"] != "gateio"
+            and exchange["classname"] != "bitfinex"
+            and exchange["classname"] != "hitbtc"
+            and "futures" not in exchange["classname"]
             )
     ]
 else:
@@ -473,16 +483,20 @@ if "kraken" in exchanges_names:
                  "download all trade data from 2018 up to today with a query limit "
                  "of several seconds each.")
 
-with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
-    futures = {executor.submit(process_exchange, exchange_name): exchange_name for exchange_name in exchanges_names}
+if jobs == 1:
+    for exchange_name in exchanges_names:
+        process_exchange(exchange_name)
+else:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
+        futures = {executor.submit(process_exchange, exchange_name): exchange_name for exchange_name in exchanges_names}
 
-    with tqdm(total=len(exchanges_names), desc="Processing exchanges") as pbar:
-        for future in concurrent.futures.as_completed(futures):
-            pbar.update(1)
-            exchange_name = futures[future]
-            del futures[future]
-            remaining_tasks = len(futures)
-            remaining_exchanges = ", ".join(list(futures.values()))
-            pbar.set_description(f"Processing: {remaining_exchanges}")
+        with tqdm(total=len(exchanges_names), desc="Processing exchanges") as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                pbar.update(1)
+                exchange_name = futures[future]
+                del futures[future]
+                remaining_tasks = len(futures)
+                remaining_exchanges = ", ".join(list(futures.values()))
+                pbar.set_description(f"Processing: {remaining_exchanges}")
 
 print("DONE!")
