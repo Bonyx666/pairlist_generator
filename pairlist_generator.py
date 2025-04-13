@@ -6,22 +6,22 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
-import freqtrade.commands.data_commands
-import nest_asyncio
 import pandas as pd
 from dateutil.relativedelta import *
-from freqtrade.configuration import Configuration
 from freqtrade.data.history.history_utils import (load_pair_history)
 from freqtrade.enums import CandleType, MarginMode, TradingMode
 from freqtrade.exchange import list_available_exchanges
-from freqtrade.plugins.pairlistmanager import PairListManager
-from freqtrade.resolvers import ExchangeResolver
 from tqdm import tqdm
 
-nest_asyncio.apply()
+my_env = os.environ.copy()
+my_env["COLUMNS"] = str(200)
 
 parser = argparse.ArgumentParser(description="Description of your script")
 parser.add_argument("--jobs",
@@ -37,113 +37,90 @@ parser.add_argument("--exchanges",
 args = parser.parse_args()
 
 
-class Generator:
+class StaticVariables():
     FIAT_currencies = ["USDT", "BUSD", "USDC", "DAI", "TUSD", "FDUSD", "PAX",
                        "USD", "EUR", "GBP", "TRY", "JPY", "NIS", "AUD", "KRW", "BRL"]
-    STAKE_CURRENCY_NAME = ""
-    EXCHANGE_NAME = ""
-    TRADING_MODE_NAME = ""
-    DATA_FORMAT = ""
-    config = ""
-    exchange = ""
-    pairlists = ""
-    pairs = ""
-    data_location = ""
+
     DATE_FORMAT = "%Y%m%d"
-    DATE_TIME_FORMAT = "%Y%m%d %H:%M:%S"
+    USER_DATA_DIR: str = os.path.join(os.getcwd(), "freqtrade_itself", "user_data")
+    pairlists_dir = os.path.join(
+        USER_DATA_DIR, "pairlists")
+
+    if os.path.isdir(pairlists_dir):
+        shutil.rmtree(pairlists_dir)
+    os.makedirs(pairlists_dir)
+
+    OUTPUTS_DIR: str = os.path.join(USER_DATA_DIR, "pairlists_output")
+    DATA_FORMAT = ""
+
+    START_DATE: datetime = datetime.strptime("20171201", DATE_FORMAT)
+    END_DATE: datetime = datetime.today().replace(day=1)
+
+
+def count_files_in_directory(directory, include_subdirectories=False):
+    if include_subdirectories:
+        # Use os.walk() to count files recursively in subdirectories
+        return sum([len(files) for _, _, files in os.walk(directory)])
+    else:
+        # List only files in the current directory
+        return len([f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))])
+
+
+class Generator:
     TRADABLE_ONLY = ""
     ACTIVE_ONLY = ""
     DOWNLOAD_DATA = ""
+    STAKE_CURRENCY_NAME = ""
+    EXCHANGE_NAME = ""
+    TRADING_MODE_NAME = ""
+
+    exchange = ""
+    pairlists = ""
+    pairs = ""
 
     FUTURES_ONLY = False
     SPOT_ONLY = True
 
+    def get_candle_type(self):
+        if self.TRADING_MODE_NAME == "spot":
+            return CandleType.SPOT
+        elif self.TRADING_MODE_NAME == "futures":
+            return CandleType.FUTURES
+        else:
+            logging.error("UH OH! WRONG CANDLE TYPE!!")
+            exit()
+
     def __init__(self):
-        self.pairs_market_currency = []
+        self.data_location = None
+        self.data_location_market = None
+
+        os.makedirs(StaticVariables.OUTPUTS_DIR, exist_ok=True)
+
+        self.pairs_market_currency: [] = []
         os.nice(19)
-        self.INTERVAL_ARR = ["monthly"]
-        self.ASSET_FILTER_PRICE_ARR = [0.0, 0.01, 0.02, 0.05, 0.15, 0.5]
-        self.NUMBER_ASSETS_ARR = [30, 45, 60, 75, 90, 105, 120, 200, 99999]
+        self.INTERVAL_ARR: [] = ["monthly", "yearly", "lifetime"]
+        self.ASSET_FILTER_PRICE_ARR: [] = [0.0, 0.01, 0.02, 0.05, 0.15, 0.5]
+        self.NUMBER_ASSETS_ARR: [] = [5, 10, 20, 30, 45, 60, 75, 90, 105, 120, 200, 99999]
 
-        self.DATA_FORMAT = "jsongz"
+        self.DATA_FORMAT: str = "feather"
 
-        self.TRADABLE_ONLY = False
-        self.ACTIVE_ONLY = False
-        self.TRADING_MODES = ["futures", "spot"]
-        self.CANDLE_TYPE = CandleType.SPOT
-
-        self.START_DATE_STR = "20171201 00:00:00"
-        self.END_DATE_STR = f"{datetime.today().replace(day=1).strftime('%Y%m%d')} 00:00:00"
-        self.start_string = self.START_DATE_STR.split(" ")[0]
-        self.end_string = self.END_DATE_STR.split(" ")[0]
+        self.TRADABLE_ONLY: bool = False
+        self.ACTIVE_ONLY: bool = False
+        self.TRADING_MODES: [] = ["futures", "spot"]
 
         self.base_volume = None
 
-    def set_config(self):
-        self.config = Configuration.from_files([])
-        self.config["dataformat_ohlcv"] = self.DATA_FORMAT
-        self.config["timeframe"] = "1d"
-        self.config["exchange"]["name"] = self.EXCHANGE_NAME
-        self.config["stake_currency"] = self.STAKE_CURRENCY_NAME
-        self.config["exchange"]["pair_whitelist"] = [
-            f".*/{self.STAKE_CURRENCY_NAME}",
-        ]
+    def get_data_slices_dates(self, interval):
+        start_date = StaticVariables.START_DATE.replace()  # new instance
+        end_date = StaticVariables.END_DATE.replace()  # new instance
 
-        self.config["exchange"]["pair_blacklist"] = []
-        self.config["pairlists"] = [
-            {
-                "method": "StaticPairList",
-            },
-        ]
-
-        if self.TRADING_MODE_NAME == "spot":
-            self.config["trading_mode"] = TradingMode.SPOT
-            self.config["margin_mode"] = MarginMode.ISOLATED
-            self.CANDLE_TYPE = CandleType.SPOT
-            self.FUTURES_ONLY = False
-            self.SPOT_ONLY = True
-            self.config["candle_type_def"] = CandleType.SPOT
-        else:
-            self.config["trading_mode"] = TradingMode.FUTURES
-            self.config["margin_mode"] = MarginMode.ISOLATED
-            self.CANDLE_TYPE = CandleType.FUTURES
-            self.FUTURES_ONLY = True
-            self.SPOT_ONLY = False
-            self.config["candle_type_def"] = CandleType.FUTURES
-
-        self.exchange = ExchangeResolver.load_exchange(self.config, validate=False)
-
-        self.pairlists = PairListManager(self.exchange, self.config)
-        self.data_location = Path(self.config["user_data_dir"],
-                                  "data_pairlist_generator",
-                                  self.config["exchange"]["name"])
-
-        if self.STAKE_CURRENCY_NAME != "":
-            self.pairs_market_currency = self.exchange.get_markets(
-                quote_currencies=[self.STAKE_CURRENCY_NAME],
-                tradable_only=self.TRADABLE_ONLY,
-                active_only=self.ACTIVE_ONLY,
-                spot_only=self.SPOT_ONLY,
-                margin_only=False,
-                futures_only=self.FUTURES_ONLY)
-            self.config["exchange"]["pair_whitelist"] = [market_data["symbol"] for market_data in
-                                                         self.pairs_market_currency.values()]
-        else:
-            self.pairs_market = self.exchange.get_markets(
-                tradable_only=self.TRADABLE_ONLY,
-                active_only=self.ACTIVE_ONLY,
-                spot_only=self.SPOT_ONLY,
-                margin_only=False,
-                futures_only=self.FUTURES_ONLY)
-
-    def get_data_slices_dates(self, start_date_str, end_date_str, interval):
-        start_date = datetime.strptime(start_date_str, self.DATE_TIME_FORMAT)
-        end_date = datetime.strptime(end_date_str, self.DATE_TIME_FORMAT)
-
-        if interval == "monthly":
+        if interval == "lifetime":
+            time_delta = relativedelta(months=+99)
+        elif interval == "yearly":
+            time_delta = relativedelta(months=+12)
+            start_date = start_date.replace(month=1, day=1)
+        elif interval == "monthly":
             time_delta = relativedelta(months=+1)
-        elif interval == "weekly":
-            time_delta = relativedelta(weeks=+1)
         elif interval == "daily":
             time_delta = relativedelta(days=+1)
         else:
@@ -182,9 +159,11 @@ class Generator:
         self.base_volume = None
         # Filter pairs that match the pattern "BTC/*"
 
-        btc_pairs = [pair for pair in self.pairs_market_currency if fnmatch.fnmatch(pair, "BTC/*")]
+        btc_pairs = [pair for pair in
+                     self.pairs_market_currency[self.STAKE_CURRENCY_NAME]
+                     if fnmatch.fnmatch(pair, "BTC/*")]
 
-        compared_pairs = [pair for pair in self.pairs_market_currency if
+        compared_pairs = [pair for pair in self.pairs_market_currency[self.STAKE_CURRENCY_NAME] if
                           fnmatch.fnmatch(pair, "*SHIB/*") or
                           fnmatch.fnmatch(pair, "*PEPE/*") or
                           fnmatch.fnmatch(pair, "*FLOKI/*") or
@@ -199,12 +178,11 @@ class Generator:
             return
 
         candles_btc = load_pair_history(
-            datadir=self.data_location,
-            timeframe=self.config["timeframe"],
+            datadir=Path(self.data_location),
+            timeframe="1d",
             pair=btc_pairs[0],
             data_format=self.DATA_FORMAT,
-            candle_type=self.CANDLE_TYPE,
-
+            candle_type=self.get_candle_type(),
         )
 
         candles_comparison = []
@@ -212,11 +190,11 @@ class Generator:
         for compared_pair in compared_pairs:
 
             candles_comparison = load_pair_history(
-                datadir=self.data_location,
-                timeframe=self.config["timeframe"],
+                datadir=Path(self.data_location),
+                timeframe="1d",
                 pair=compared_pair,
                 data_format=self.DATA_FORMAT,
-                candle_type=self.CANDLE_TYPE
+                candle_type=self.get_candle_type()
             )
             if len(candles_comparison) > 0:
                 break
@@ -226,8 +204,8 @@ class Generator:
 
         full_dataframe = pd.merge(candles_btc, candles_comparison, on="date", how="inner")
 
-        # only continue if the overlap is > 30 candles
-        if len(full_dataframe) < 30:
+        # bail if there is no data
+        if len(full_dataframe) < 1:
             return
 
         # Calculate the sum of volume columns for the last 30 rows of candles_BTC
@@ -236,24 +214,18 @@ class Generator:
         vol_comparison = full_dataframe.tail(30)["volume_y"].sum()
         returning_value = vol_btc < vol_comparison
 
-        # This is for debugging to verify the calculations
-        # print(f"vol_btc={vol_btc}, vol_{compared_pair}={vol_comparison}, "
-        #      f"exchange:{self.EXCHANGE_NAME}, "
-        #      f"market:{str(self.config['trading_mode'])} "
-        #      f"Volume in BTC? {vol_btc<vol_comparison} !")
-
         return returning_value
 
     def process_candles_data(self, filter_price):
         full_dataframe = pd.DataFrame()
 
-        for pair in self.pairs_market_currency:
+        for pair in self.pairs_market_currency[self.STAKE_CURRENCY_NAME]:
             candles = load_pair_history(
-                datadir=self.data_location,
-                timeframe=self.config["timeframe"],
+                datadir=Path(self.data_location),
+                timeframe="1d",
                 pair=pair,
                 data_format=self.DATA_FORMAT,
-                candle_type=self.CANDLE_TYPE,
+                candle_type=self.get_candle_type(),
             )
 
             if len(candles):
@@ -293,36 +265,42 @@ class Generator:
                 result_pairs_list = list(summarised.index)
 
             if len(result_pairs_list) > 0:
-                result[(f"{date_slice['start'].strftime(self.DATE_FORMAT)}"
-                        f"-{date_slice['end'].strftime(self.DATE_FORMAT)}")] \
+                result[(f"{date_slice['start'].strftime(StaticVariables.DATE_FORMAT)}"
+                        f"-{date_slice['end'].strftime(StaticVariables.DATE_FORMAT)}")] \
                     = result_pairs_list
 
         return result
 
-    # We now get a list of fiat currencies listed by occurencies
-    def get_sorted_fiat_currencies(self):
-        from collections import Counter
+    def generate_pairs_market_currency(self):
+        currency_dict = {}
 
-        # Get the quote currencies from the markets dictionary
-        quote_currencies = [market_data["quote"] for market_data in self.pairs_market.values() if
-                            any(market_data["quote"].startswith(fiat) for fiat in self.FIAT_currencies)]
+        for fullpath in Path(self.data_location_market).iterdir():
+            if not fullpath.is_file():
+                continue  # Skip directories, etc.
 
-        # Count the occurrences of each quote currency
-        quote_currency_counts = Counter(quote_currencies)
+            if "-1d" not in fullpath.stem:
+                continue
+            if "trades" in fullpath.stem:
+                continue
+            if self.DATA_FORMAT not in fullpath.suffix:
+                continue
 
-        # Sort the quote currencies based on their occurrence counts (from most to least used)
-        sorted_quote_currencies = sorted(quote_currency_counts.items(), key=lambda x: x[1], reverse=True)
+            base = fullpath.stem.split("-")[0]
+            parts = base.split("_")
 
-        # If you want only the quote currencies without their counts
-        sorted_quote_currencies = [currency for currency, _ in sorted_quote_currencies]
+            currency = parts[1]
+            if len(parts) >= 2:
+                pair = parts[0] + "/" + parts[1]
+                if len(parts) > 2:
+                    pair += ":" + ":".join(parts[2:])
+            else:
+                logging.error("MALFORMED FILE! NOT ACCEPTABLE!")
+                exit()
 
-        # Get the list of markets for each sorted quote currency
-        sorted_markets = {
-            quote_currency: [
-                market_symbol for market_symbol, market_data in self.exchange.markets.items()
-                if quote_currency in market_data["quote"]]
-            for quote_currency in sorted_quote_currencies}
-        return sorted_markets
+            # Add to dictionary
+            currency_dict.setdefault(currency, []).append(pair)
+
+        return currency_dict
 
     def main(self, exchange):
         self.EXCHANGE_NAME = exchange
@@ -333,40 +311,80 @@ class Generator:
             # for spot on the other hand ... well, good luck - if they work, they work. If not, not.
             if (
                     single_trading_mode == "futures" and
-                    self.EXCHANGE_NAME not in ["binance", "okx", "gate", "bybit", "binanceus"]
+                    self.EXCHANGE_NAME not in ["binance", "okx", "gate", "bybit", "binanceus", "hyperliquid"]
             ):
                 continue
 
             self.TRADING_MODE_NAME = single_trading_mode
-            self.set_config()  # initializes the exchange too, so we can get markets to begin with
 
-            sorted_quote_currencies = self.get_sorted_fiat_currencies()
+            self.data_location: str = (
+                str(os.path.join(StaticVariables.USER_DATA_DIR, "data_pairlist_generator",
+                                 self.EXCHANGE_NAME)))
+            self.data_location_market = self.data_location
+            if self.TRADING_MODE_NAME == "spot":
+                pass
+            elif self.TRADING_MODE_NAME == "futures":
+                self.data_location_market = str(os.path.join(self.data_location, self.TRADING_MODE_NAME))
 
-            for single_currency_name in sorted_quote_currencies.keys():
+            command = [
+                sys.executable, f"{os.path.join(os.getcwd(), "freqtrade_itself")}/freqtrade/main.py",
+                "download-data",  # Replace this with your actual command
+                f"--pairs=.*",
+                f"--include-inactive-pairs",
+                f"--timerange={StaticVariables.START_DATE.strftime(StaticVariables.DATE_FORMAT) + 
+                               "-" + StaticVariables.END_DATE.strftime(StaticVariables.DATE_FORMAT)}",
+                f"--exchange={self.EXCHANGE_NAME}",
+                f"--timeframes=1d",
+                f"--trading-mode={single_trading_mode}",
+                f"--datadir={self.data_location}",
+            ]
+            if self.EXCHANGE_NAME.lower() == "kraken".lower():
+                command.append(f"--dl-trades")
+                command.append(f"--config={str(os.path.join(
+                    StaticVariables.USER_DATA_DIR, "configs_backtest", "config_ccxt1000.json"))}")
+            else:
+                command.append(f"--config={str(os.path.join(
+                    StaticVariables.USER_DATA_DIR, "configs_backtest", "config_ccxt200.json"))}")
+            # freqtrade.commands.data_commands.start_download_data(download_args)
+
+            os.makedirs(self.data_location, exist_ok=True)
+            with (open(os.path.join(StaticVariables.OUTPUTS_DIR, f"{self.EXCHANGE_NAME}.txt"), "w") as outputfile):
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=my_env
+                )
+
+                def stream_output(pipe, stream_outputfile):
+                    for line in pipe:
+                        stream_outputfile.write(line)
+                        stream_outputfile.flush()
+
+                # Create and start threads for stdout and stderr
+                stdout_thread = threading.Thread(target=stream_output, args=(process.stdout, outputfile))
+                stderr_thread = threading.Thread(target=stream_output, args=(process.stderr, outputfile))
+
+                stdout_thread.start()
+                stderr_thread.start()
+
+                # Wait for both threads and the process to finish
+                stdout_thread.join()
+                stderr_thread.join()
+                process.wait()
+
+            datadir_count = count_files_in_directory(self.data_location, True)
+            if datadir_count == 0:
+                os.rmdir(self.data_location)
+                continue
+            datadir_count_direct = count_files_in_directory(self.data_location, False)
+            if datadir_count_direct == 0:
+                continue
+
+            self.pairs_market_currency = self.generate_pairs_market_currency()
+            for single_currency_name in self.pairs_market_currency.keys():
                 self.STAKE_CURRENCY_NAME = single_currency_name
-
-                self.set_config()
-
-                if len(self.config["exchange"]["pair_whitelist"]) == 0:
-                    continue
-
-                download_args = {"pairs": self.config["exchange"]["pair_whitelist"],
-                                 "include_inactive": True,
-                                 "timerange": self.start_string + "-" + self.end_string,
-                                 "download_trades": False,
-                                 "exchange": self.EXCHANGE_NAME,
-                                 "timeframes": [self.config["timeframe"]],
-                                 "trading_mode": self.config["trading_mode"],
-                                 "dataformat_ohlcv": self.DATA_FORMAT,
-                                 "datadir": self.data_location
-                                 }
-
-                # Just try to download data from kraken, you ll LOVE it -.-
-                #if exchange == "kraken":
-                #    download_args["download_trades"] = True
-
-                if exchange != "kraken":
-                    freqtrade.commands.data_commands.start_download_data(download_args)
 
                 self.base_volume = self.calculate_is_base_volume()
                 if self.base_volume is None:
@@ -381,23 +399,26 @@ class Generator:
                         continue
 
                     for interval in self.INTERVAL_ARR:
-                        date_slices = self.get_data_slices_dates(
-                            self.START_DATE_STR,
-                            self.END_DATE_STR,
-                            interval)
+                        date_slices = self.get_data_slices_dates(interval)
                         path_prefix = os.path.join(
-                            os.getcwd(), "user_data", "pairlists",
+                            StaticVariables.pairlists_dir,
                             f"{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}",
                             f"{self.STAKE_CURRENCY_NAME}",
                             f"{interval}"
                         )
-                        if not os.path.exists(path_prefix):
-                            os.makedirs(path_prefix)
+                        os.makedirs(path_prefix, exist_ok=True)
 
                         for number_assets in self.NUMBER_ASSETS_ARR:
                             slices = self.process_date_slices(volume_dataframe, date_slices, number_assets)
                             for index, (timerange, current_slice) in enumerate(slices.items()):
                                 end_date_config_file = timerange.split("-")[1]
+                                end_date_dt = datetime.strptime(end_date_config_file, "%Y%m%d")
+
+                                if interval == "yearly":
+                                    if end_date_dt.month > 1:
+                                        # skip if end is not the 1st of january and if is yearly
+                                        continue
+
                                 whitelist = current_slice
                                 file_prefix = (f"{interval}_{number_assets}_{self.STAKE_CURRENCY_NAME}_"
                                                f"{str(asset_filter_price).replace('.', ',')}"
@@ -428,8 +449,10 @@ class Generator:
 
                                 if os.path.exists(file_name):
                                     os.remove(file_name)
-                                with open(file_name, "w") as f2:
-                                    json.dump(data, f2, indent=4)
+                                # it would be useless to have a current date and lifetime file with the same content
+                                if interval != "lifetime":
+                                    with open(file_name, "w") as f2:
+                                        json.dump(data, f2, indent=4)
 
                                 # If this is the last slice, additionally create a _current.json
                                 if index == len(slices) - 1:
@@ -458,7 +481,7 @@ if args.exchanges == "":
             )
     ]
 else:
-    exchanges_names = args.exchanges.split()
+    exchanges_names = args.exchanges.split(" ")
 
 
 # Define a function to process each exchange
