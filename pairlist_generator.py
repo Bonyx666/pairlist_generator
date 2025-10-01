@@ -24,20 +24,29 @@ my_env = os.environ.copy()
 my_env["COLUMNS"] = str(200)
 
 parser = argparse.ArgumentParser(description="Description of your script")
-parser.add_argument("--jobs",
-                    default=os.cpu_count(),
-                    type=int,
-                    help="Number of jobs, default=cores. -1 for unlimited")
-parser.add_argument("--exchanges",
-                    type=str,
-                    help="Space separated list of exchanges",
-                    default="")
+parser.add_argument(
+    "--jobs",
+    default=os.cpu_count(),
+    type=int,
+    help="Number of jobs, default=cores. -1 for unlimited"
+)
+parser.add_argument(
+    "--exchanges",
+    type=str,
+    help="Space separated list of exchanges",
+    default=""
+)
+parser.add_argument(
+    "--download_only",
+    action="store_true",
+    help="If set, uploads data to remote_backtest_vps"
+)
 
 # Parse the arguments
 args = parser.parse_args()
 
 
-class StaticVariables():
+class StaticVariables:
     FIAT_currencies = ["USDT", "BUSD", "USDC", "DAI", "TUSD", "FDUSD", "PAX",
                        "USD", "EUR", "GBP", "TRY", "JPY", "NIS", "AUD", "KRW", "BRL"]
 
@@ -46,15 +55,32 @@ class StaticVariables():
     pairlists_dir = os.path.join(
         USER_DATA_DIR, "pairlists")
 
-    if os.path.isdir(pairlists_dir):
-        shutil.rmtree(pairlists_dir)
-    os.makedirs(pairlists_dir)
+    if args.download_only is not True:
+        if os.path.isdir(pairlists_dir):
+            shutil.rmtree(pairlists_dir)
+        os.makedirs(pairlists_dir)
 
     OUTPUTS_DIR: str = os.path.join(USER_DATA_DIR, "pairlists_output")
     DATA_FORMAT = ""
 
     START_DATE: datetime = datetime.strptime("20171201", DATE_FORMAT)
     END_DATE: datetime = datetime.today().replace(day=1)
+    exchange_download_ccxt = {
+        "binance": 75,
+        "bybit": 75,
+        "okx": 150,
+        "htx": 100,
+        "kucoin": 75,
+        "gate": 75,
+        "kraken": 750
+    }
+
+
+def get_config_download_ccxt(current_exchange):
+    ccxt_download_value = StaticVariables.exchange_download_ccxt.get(current_exchange, 200)
+    result = os.path.join(StaticVariables.USER_DATA_DIR, "configs_backtest",
+                          f"config_ccxt{ccxt_download_value}.json")
+    return result
 
 
 def count_files_in_directory(directory, include_subdirectories=False):
@@ -69,7 +95,6 @@ def count_files_in_directory(directory, include_subdirectories=False):
 class Generator:
     TRADABLE_ONLY = ""
     ACTIVE_ONLY = ""
-    DOWNLOAD_DATA = ""
     STAKE_CURRENCY_NAME = ""
     EXCHANGE_NAME = ""
     TRADING_MODE_NAME = ""
@@ -302,6 +327,26 @@ class Generator:
 
         return currency_dict
 
+    def get_new_data(self):
+        data = {
+            "pairlists": [
+                {
+                    "method": "StaticPairList"
+                }
+            ],
+            "trading_mode": self.TRADING_MODE_NAME.lower(),
+            "margin_mode": "isolated",
+            "stake_currency": self.STAKE_CURRENCY_NAME.upper(),
+            "exchange": {
+                "name": self.EXCHANGE_NAME,
+                "key": "",
+                "secret": "",
+                "pair_whitelist": [],
+                "pair_blacklist": []
+            }
+        }
+        return data
+
     def main(self, exchange):
         self.EXCHANGE_NAME = exchange
 
@@ -321,34 +366,37 @@ class Generator:
                 str(os.path.join(StaticVariables.USER_DATA_DIR, "data_pairlist_generator",
                                  self.EXCHANGE_NAME)))
             self.data_location_market = self.data_location
+
+            pair_results = [".*/" + currency for currency in StaticVariables.FIAT_currencies]
             if self.TRADING_MODE_NAME == "spot":
                 pass
             elif self.TRADING_MODE_NAME == "futures":
                 self.data_location_market = str(os.path.join(self.data_location, self.TRADING_MODE_NAME))
+                pair_results = [f".*/{currency}:{currency}" for currency in StaticVariables.FIAT_currencies]
 
             command = [
                 sys.executable, f"{os.path.join(os.getcwd(), "freqtrade_itself")}/freqtrade/main.py",
                 "download-data",  # Replace this with your actual command
-                f"--pairs=.*",
+                f"--config={os.path.join(os.getcwd(), "freqtrade_itself", "user_data",
+                                         "configs_backtest", "config_baseline.json")}",
+                f"--pairs", *pair_results,
                 f"--include-inactive-pairs",
-                f"--timerange={StaticVariables.START_DATE.strftime(StaticVariables.DATE_FORMAT) + 
-                               "-" + StaticVariables.END_DATE.strftime(StaticVariables.DATE_FORMAT)}",
+                f"--new-pairs-days={days_since_20171101()}",
                 f"--exchange={self.EXCHANGE_NAME}",
                 f"--timeframes=1d",
                 f"--trading-mode={single_trading_mode}",
+                f"--userdir={StaticVariables.USER_DATA_DIR}",
                 f"--datadir={self.data_location}",
             ]
             if self.EXCHANGE_NAME.lower() == "kraken".lower():
                 command.append(f"--dl-trades")
-                command.append(f"--config={str(os.path.join(
-                    StaticVariables.USER_DATA_DIR, "configs_backtest", "config_ccxt1000.json"))}")
-            else:
-                command.append(f"--config={str(os.path.join(
-                    StaticVariables.USER_DATA_DIR, "configs_backtest", "config_ccxt200.json"))}")
-            # freqtrade.commands.data_commands.start_download_data(download_args)
+                command.append(f"--data-format-trades=feather")
 
-            os.makedirs(self.data_location, exist_ok=True)
-            with (open(os.path.join(StaticVariables.OUTPUTS_DIR, f"{self.EXCHANGE_NAME}.txt"), "w") as outputfile):
+            command.append(f"--config={get_config_download_ccxt(self.EXCHANGE_NAME)}")
+
+            # os.makedirs(self.data_location, exist_ok=True)
+            with (open(os.path.join(StaticVariables.OUTPUTS_DIR,
+                                    f"{self.EXCHANGE_NAME}-{self.TRADING_MODE_NAME}.txt"), "w") as outputfile):
                 process = subprocess.Popen(
                     command,
                     stdout=subprocess.PIPE,
@@ -374,12 +422,16 @@ class Generator:
                 stderr_thread.join()
                 process.wait()
 
+            '''
             datadir_count = count_files_in_directory(self.data_location, True)
             if datadir_count == 0:
                 os.rmdir(self.data_location)
                 continue
             datadir_count_direct = count_files_in_directory(self.data_location, False)
             if datadir_count_direct == 0:
+                continue
+            '''
+            if args.download_only is True:
                 continue
 
             self.pairs_market_currency = self.generate_pairs_market_currency()
@@ -397,18 +449,17 @@ class Generator:
 
                     if volume_dataframe.empty:
                         continue
+                    for number_assets in self.NUMBER_ASSETS_ARR:
 
-                    for interval in self.INTERVAL_ARR:
-                        date_slices = self.get_data_slices_dates(interval)
-                        path_prefix = os.path.join(
-                            StaticVariables.pairlists_dir,
-                            f"{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}",
-                            f"{self.STAKE_CURRENCY_NAME}",
-                            f"{interval}"
-                        )
-                        os.makedirs(path_prefix, exist_ok=True)
-
-                        for number_assets in self.NUMBER_ASSETS_ARR:
+                        for interval in self.INTERVAL_ARR:
+                            date_slices = self.get_data_slices_dates(interval)
+                            path_prefix = os.path.join(
+                                StaticVariables.pairlists_dir,
+                                f"{self.EXCHANGE_NAME}_{self.TRADING_MODE_NAME}",
+                                f"{self.STAKE_CURRENCY_NAME}",
+                                f"{interval}"
+                            )
+                            all_slices_pairs_data = self.get_new_data()
                             slices = self.process_date_slices(volume_dataframe, date_slices, number_assets)
                             for index, (timerange, current_slice) in enumerate(slices.items()):
                                 end_date_config_file = timerange.split("-")[1]
@@ -426,42 +477,44 @@ class Generator:
                                 file_name = os.path.join(
                                     path_prefix, f"{file_prefix}{end_date_config_file}.json")
 
-                                os.makedirs(os.path.dirname(file_name), exist_ok=True)
-
-                                data = {
-                                    "pairlists": [
-                                        {
-                                            "method": "StaticPairList"
-                                        }
-                                    ],
-                                    "trading_mode": self.TRADING_MODE_NAME.lower(),
-                                    "margin_mode": "isolated",
-                                    "stake_currency": self.STAKE_CURRENCY_NAME.upper(),
-                                    "exchange": {
-                                        "name": self.EXCHANGE_NAME,
-                                        "key": "",
-                                        "secret": "",
-                                        "pair_whitelist": [],
-                                        "pair_blacklist": []
-                                    }
-                                }
+                                data = self.get_new_data()
                                 data["exchange"]["pair_whitelist"] = whitelist
+                                if len(whitelist) == 0:
+                                    continue
 
+                                for pair in whitelist:
+
+                                    if pair not in all_slices_pairs_data["exchange"]["pair_whitelist"]:
+                                        all_slices_pairs_data["exchange"]["pair_whitelist"].append(pair)
                                 if os.path.exists(file_name):
                                     os.remove(file_name)
                                 # it would be useless to have a current date and lifetime file with the same content
                                 if interval != "lifetime":
+                                    os.makedirs(os.path.dirname(file_name), exist_ok=True)
                                     with open(file_name, "w") as f2:
                                         json.dump(data, f2, indent=4)
+
 
                                 # If this is the last slice, additionally create a _current.json
                                 if index == len(slices) - 1:
                                     last_slice_file_name = os.path.join(
                                         path_prefix, f"{file_prefix}current.json")
+
                                     if os.path.exists(last_slice_file_name):
                                         os.remove(last_slice_file_name)
-                                    with open(last_slice_file_name, "w") as f2:
-                                        json.dump(data, f2, indent=4)
+
+                                    os.makedirs(os.path.dirname(last_slice_file_name), exist_ok=True)
+                                    with open(last_slice_file_name, "w") as f3:
+                                        json.dump(data, f3, indent=4)
+
+                                    all_slices_pairs_file_name = os.path.join(
+                                        path_prefix, f"{file_prefix}all_slices_pairs.json")
+                                    if os.path.exists(all_slices_pairs_file_name):
+                                        os.remove(all_slices_pairs_file_name)
+
+                                    os.makedirs(os.path.dirname(all_slices_pairs_file_name), exist_ok=True)
+                                    with open(all_slices_pairs_file_name, "w") as f4:
+                                        json.dump(all_slices_pairs_data, f4, indent=4)
 
                 # print(f"Done {self.exchange}|{single_trading_mode}|{self.STAKE_CURRENCY_NAME}")
 
@@ -489,6 +542,14 @@ def process_exchange(current_exchange):
     Generator().main(current_exchange)
 
 
+def days_since_20171101():
+    from datetime import datetime
+    start_date = datetime(2017, 11, 1)
+    today = datetime.today()
+    result = (today - start_date).days
+    return result
+
+
 #process_exchange("binance")
 # easier debugging, only with one thread
 #for exchange_name in exchanges_names:
@@ -500,11 +561,11 @@ if jobs == -1:
 
 if "kraken" in exchanges_names:
     print("We found the exchange kraken, it is assumed you downloaded AND "
-                 "converted the csv-data to daily candles already as per "
-                 "https://www.freqtrade.io/en/stable/exchanges/#historic-kraken-data . "
-                 "it would otherwise take ages to do anything since we would have to "
-                 "download all trade data from 2018 up to today with a query limit "
-                 "of several seconds each.")
+          "converted the csv-data to trades already as per "
+          "https://www.freqtrade.io/en/stable/exchanges/#historic-kraken-data . "
+          "it would otherwise take ages to do anything since we would have to "
+          "download all trade data from 2018 up to today with a query limit "
+          "of several seconds each.")
 
 if jobs == 1:
     for exchange_name in exchanges_names:
